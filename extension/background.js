@@ -46,9 +46,12 @@ const ops = {
   async reset() { await chrome.storage.sync.remove('box'); await chrome.storage.session.remove('jwk'); await chrome.storage.local.remove('approvals'); return { ok: true }; },
   async lock() { await chrome.storage.session.remove('jwk'); return { ok: true }; },
   // names and owners only
-  // names and owners only; pages see craftworks identities, the popup sees everything
-  async list() { return (await entries()).filter(e => !e.kind || e.kind === 'identity').map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key })); },
-  async listAll() { return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, kind: e.kind || 'identity', room: e.room, origin: e.origin })); },
+  // one identity is active at a time; a page sees only that one (like a wallet's selected account)
+  async active() { const a = (await chrome.storage.local.get('active')).active || null; const list = (await entries()).filter(e => !e.kind || e.kind === 'identity'); if (a && list.some(e => e.owner === a)) return a; return list[0] ? list[0].owner : null; },
+  async setActive({ owner }) { const list = (await entries()).filter(e => !e.kind || e.kind === 'identity'); if (!list.some(e => e.owner === owner)) throw new Error('no such identity'); await chrome.storage.local.set({ active: owner }); return { ok: true }; },
+  // what a page sees: the active identity alone, by name and owner
+  async list() { const a = await ops.active(); return (await entries()).filter(e => e.owner === a && (!e.kind || e.kind === 'identity')).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key })); },
+  async listAll() { const a = await ops.active(); return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, kind: e.kind || 'identity', room: e.room, origin: e.origin, active: e.owner === a })); },
   // a new identity: an Ed25519 seed and a store key from the browser's randomness
   async create({ name }) {
     name = (name || '').trim(); if (!name || name.length > 64) throw new Error('a name is 1 to 64 characters');
@@ -58,6 +61,7 @@ const ops = {
     const store_key = hex(crypto.getRandomValues(new Uint8Array(32)));
     const list = await entries(); if (list.some(e => e.name === name)) throw new Error('that name is taken');
     list.push({ name, owner, store_key, signing_key: seed, created_at: Math.floor(Date.now() / 1000) }); await save(list);
+    await chrome.storage.local.set({ active: owner });
     return { owner };
   },
   // from a node's delegate, a keyfile, or another device; a store key alone is read-only
@@ -74,8 +78,8 @@ const ops = {
   async rename({ owner, name }) { name = (name || '').trim(); if (!name || name.length > 64) throw new Error('a name is 1 to 64 characters'); const list = await entries(); const e = list.find(e => e.owner === owner); if (!e) throw new Error('no such identity'); e.name = name; await save(list); return { ok: true }; },
   async remove({ owner }) { const list = (await entries()).filter(e => e.owner !== owner); await save(list); return { ok: true, count: list.length }; },
   // what an app needs: the store key to read, a signature to write
-  async storeKey({ owner }) { return (await find(owner)).store_key; },
-  async sign({ owner, message }) { const e = await find(owner); if (!e.signing_key) throw new Error('read-only identity'); const key = await seedToKey(e.signing_key, ['sign']); return hex(await crypto.subtle.sign('Ed25519', key, unhex(message))); },
+  async storeKey({ owner }) { if (owner !== await ops.active()) throw new Error('not the active identity'); return (await find(owner)).store_key; },
+  async sign({ owner, message }) { if (owner !== await ops.active()) throw new Error('not the active identity'); const e = await find(owner); if (!e.signing_key) throw new Error('read-only identity'); const key = await seedToKey(e.signing_key, ['sign']); return hex(await crypto.subtle.sign('Ed25519', key, unhex(message))); },
   // per app, per identity: remembered once the person says yes in the page
   // `app` is set by the dispatcher from the sender's URL, never taken from the message
   async approved({ app, owner }) { if (!app) return false; const a = await approvals(); return !!(a[app] && a[app][owner]); },

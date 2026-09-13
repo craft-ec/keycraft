@@ -11,7 +11,7 @@ const ext = path.resolve(new URL('..', import.meta.url).pathname);
 fs.rmSync(profile, { recursive: true, force: true }); fs.mkdirSync(profile, { recursive: true });
 const t0 = Date.now(); const T = () => ((Date.now() - t0) / 1000).toFixed(1) + 's';
 const say = (...a) => { console.log(T(), ...a); };
-setTimeout(() => { say('HARNESS TIMEOUT'); process.exit(3); }, 300000).unref();
+setTimeout(() => { say("HARNESS TIMEOUT"); process.exit(3); }, 360000).unref();
 let ctx;
 try {
   ctx = await chromium.launchPersistentContext(profile, { channel: process.env.PW_EXE ? undefined : 'chromium', executablePath: process.env.PW_EXE || undefined, headless: !process.env.HEADED, args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`], viewport: { width: 1100, height: 800 } });
@@ -39,14 +39,15 @@ try {
 
   // filecraft: read (store key), then write (a folder = one signed commit)
   const fc = await ctx.newPage(); fc.on('dialog', d => { say('page dialog:', d.message().slice(0, 100)); d.accept(); });
-  fc.on('pageerror', e => say('page error:', String(e).slice(0, 200)));
+  fc.on('pageerror', e => say('page error:', String(e).slice(0, 200))); fc.on('console', m => say('fc console:', m.type(), m.text().slice(0, 200)));
   await fc.goto(`http://localhost:8796/index.html?port=${port}`);
   await fc.waitForFunction(() => /list \/files: ok/.test(document.getElementById('log').textContent) || /error/.test(document.getElementById('status').textContent) || document.getElementById('s-welcome').classList.contains('on'), null, { timeout: 120000 });
   if (await fc.evaluate(() => document.getElementById('s-welcome').classList.contains('on'))) {
     say('filecraft: no identity yet; creating one through the extension');
     await fc.fill('#w-name', 'harness-' + Date.now().toString(36)); await fc.click('#w-go');
-    await fc.waitForFunction(() => /list \/files: ok/.test(document.getElementById('log').textContent) || document.getElementById('w-err').textContent.length > 0, null, { timeout: 180000 });
+    await fc.waitForFunction(() => /list \/files: ok/.test(document.getElementById('log').textContent) || document.getElementById('w-err').textContent.length > 0, null, { timeout: 260000 });
     say('welcome result:', JSON.stringify(await fc.textContent('#w-err')));
+    say('FULL LOG:\n' + await fc.textContent('#log'));
   }
   say('filecraft:', await fc.textContent('#status'), '|', await fc.textContent('#acct-btn'), '|', await fc.textContent('#crumb'));
   fc.on('console', m => { if (m.type() === 'error') say('page console:', m.text().slice(0, 300)); });

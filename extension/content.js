@@ -29,3 +29,5 @@ window.addEventListener('message', async e => {
   } catch (err) { answer({ error: String(err && err.message || err) }); }
 });
 window.postMessage({ craftworksKeysReady: true }, '*');
+// the active identity changed in the popup: pages reload their account
+chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.active) window.postMessage({ craftworksKeysChanged: true }, '*'); });
