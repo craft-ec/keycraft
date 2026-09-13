@@ -7,12 +7,13 @@
 - [x] `extension/`: sealed synced store, Ed25519 via WebCrypto, per-app approval remembered, popup (create, rename, remove, keyfile export/import), page bridge
 - [x] `craftworks-page::keys`: extension backend behind the same `Keys` API (list, generate, import, export, store_key, signer); delegate fallback; every app rebuilt
 - [x] every app: no key management, menu says identities live in the extension
-- [ ] verified in a browser with the extension loaded (`extension/test/drive.mjs`): unlock → scan/import → filecraft read → a signed write. Google Chrome ignores unpacked extensions since 137; the harness uses Chrome for Testing 151 from the Playwright cache. First runs: extension loads; unlock timed out once (cause unknown), one run hung 14 min (pipe buffering hid output; now streamed and capped at 5 min)
+- [x] verified in Chrome for Testing 151 with the extension loaded (`extension/test/drive.mjs`, Playwright): unlock 0.1 s; filecraft with no identity → welcome creates one in the extension (two confirms: create, allow this app) → the drive is created with extension-signed commits (39 s of node time through the Hetzner tunnel) → use stamp 4 s → a folder write signed by the extension ok. Two bugs found by the harness: the worker must be `type: module` (its imports were a silent syntax error, every message hung), and popup-only ops must be gated by sender origin, not `sender.tab`
+- Harness lessons: Google Chrome ignores unpacked extensions since 137 (use Chrome for Testing / Playwright's Chromium); a grep pipe block-buffers the output and looks like a hang; a call into the page's wasm while its own call is in flight traps (RefCell) — wait for the log first
 
 ## Phase 3: the native helper (2026-09-13)
 - [x] `host/keycraft-host`: decrypts every delegate's secrets in a node's data dir (format in DESIGN §3); CLI `list`, native messaging `ping`/`list`, `install <id>`; verified on the Mac node (2 identities decoded with owners, 9 other delegates named, River's rooms among them); stdio protocol verified from Python
 - [x] popup: Scan this machine's node → import craftworks identities
-- [ ] verified from inside the extension (the harness step)
+- [ ] verified from inside the extension: Chrome for Testing does not read the user-level NativeMessagingHosts manifests ("Specified native messaging host not found"), so the popup's scan is untested in a browser; needs real Chrome with the extension loaded unpacked (chrome://extensions → Load unpacked → keycraft/extension, then `keycraft-host install <id>`)
 
 ## Phase 4: River write-back (§6) — not started
 ## Phase 5: typed keys (§4) — not started
