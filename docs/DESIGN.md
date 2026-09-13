@@ -85,11 +85,27 @@ identity: in its drive, not in the delegate (frozen, and per node).
   keycraft lists apps by last use. A device that imports the keys sees the
   same history.
 
-## 6. Next: River write-back
+## 6. River moves as a bundle
 
-The helper reads River's per-room signing keys on device A. River's own
-delegate protocol has `StoreSigningKey {room_key, signing_key_bytes}`, so on
-device B the extension (through the node's WebSocket API, or a small CLI
-using `river-core`) can hand them to River's delegate there. Whether the
-node lets a client other than River's page address River's delegate is
-unverified: the first thing to measure.
+River keeps everything per node in its own delegate scope: a signing key
+per room and the room state (50–420 KB each). The extension's synced store
+cannot hold that (8 KiB per item), and River's own protocol would need its
+CBOR framing and per-release delegate address. So River moves as a file:
+
+- **Export** (popup → helper): every secret of River's delegate scope,
+  decrypted with node A's key, as `{v, delegate, from, secrets:[{k, v}]}`
+  sealed under a password (PBKDF2-HMAC-SHA256 310k → XChaCha20-Poly1305,
+  file `KCB1‖salt‖nonce‖ct`), written to `~/Downloads/keycraft-<delegate>-<time>.bundle`
+  because a helper reply is capped at 1 MB.
+- **Import** (popup file picker → helper): the bytes go to the helper (a
+  request to the host may be large), which re-encrypts each secret with
+  node B's key under the same delegate address and merges the name
+  registry. The node reads secret files directly, so a running node sees
+  them at once. River on node B finds its rooms under that address; a newer
+  River migrates them the way it migrates its own older delegates, provided
+  that address is in its legacy list.
+
+Measured on the Mac node: 12 secrets (5 rooms), 894 KB bundle; wrong
+password refused; import into a scratch store under a different node key
+reads back all 12 by name; the native-messaging import request was 1.1 MB.
+Not measured: River's UI on a second machine showing the rooms.

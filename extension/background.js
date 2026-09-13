@@ -95,6 +95,12 @@ ops.importFromNode = async ({ data_dir } = {}) => { const r = await native({ op:
 // a River room's signing key: kept to hand back to River's delegate on another device
 ops.putRoom = async ({ room, origin, signing_key, delegate }) => { if (unhex(signing_key).length !== 32) throw new Error('signing key: 32 bytes'); const owner = await publicOf(signing_key); const list = (await entries()).filter(e => !(e.kind === 'river-room' && e.room === room)); list.push({ kind: 'river-room', name: `River room ${room.slice(0, 8)}…`, owner, room, origin, delegate, signing_key, store_key: '', created_at: Math.floor(Date.now() / 1000) }); await save(list); return { ok: true }; };
 
+// River (or any delegate) moves between machines as a sealed bundle file: the helper writes it here,
+// and reads it back on the other machine from the bytes the popup's file picker hands over
+ops.exportDelegate = async ({ delegate, password, data_dir }) => native({ op: 'export', delegate, password, data_dir });
+ops.importBundle = async ({ bundle, password, data_dir }) => native({ op: 'import', bundle, password, data_dir });
+ops.riverDelegates = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); return r.delegates.filter(d => (d.river_rooms || []).length).map(d => ({ address: d.address, rooms: d.river_rooms.length, secrets: Object.keys(d.secrets).length })); };
+
 const FROM_PAGE = new Set(['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign', 'approved', 'approve']);
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {

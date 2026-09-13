@@ -9,13 +9,19 @@
 //!
 //!   keycraft-host list [--data-dir DIR] [--values]   every delegate, decoded where known; --values dumps other delegates' secrets
 //!   keycraft-host install <extension id>      register as a native messaging host for Chrome
+//!   keycraft-host export <delegate> --password P --out FILE [--data-dir DIR]
+//!                                             a delegate's whole scope, sealed, as a bundle file
+//!   keycraft-host import FILE --password P [--data-dir DIR]
+//!                                             the bundle into this node's store, under this node's key
 //!   (no arguments, stdin)                     native messaging: one JSON request per message
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, OsRng};
+use chacha20poly1305::{AeadCore, KeyInit, XChaCha20Poly1305, XNonce};
+use hmac::{Hmac, Mac};
 use hkdf::Hkdf;
 use serde::Serialize;
 use serde_json::json;
@@ -233,6 +239,198 @@ fn list(data_dir: &Path, values: bool) -> Result<serde_json::Value, String> {
     Ok(json!({"data_dir": data_dir.display().to_string(), "delegates": delegates}))
 }
 
+// ---- bundles: a delegate's whole scope, moved between nodes as one sealed file.
+// {v:1, delegate, from, secrets:[{k,v}]} (base64) → XChaCha20-Poly1305 under
+// PBKDF2-HMAC-SHA256(password, salt, 310k). River's delegate is the case in
+// hand: its room keys AND its room state travel, and on the other node River
+// finds them under the same delegate address (or migrates them, as it does
+// across its own releases).
+const BUNDLE_MAGIC: &[u8] = b"KCB1";
+const BUNDLE_ROUNDS: u32 = 310_000;
+
+fn pbkdf2_sha256(password: &[u8], salt: &[u8], rounds: u32) -> [u8; 32] {
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(password).expect("hmac key");
+    mac.update(salt);
+    mac.update(&1u32.to_be_bytes());
+    let mut u: [u8; 32] = mac.finalize().into_bytes().into();
+    let mut out = u;
+    for _ in 1..rounds {
+        let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(password).expect("hmac key");
+        mac.update(&u);
+        u = mac.finalize().into_bytes().into();
+        for (o, x) in out.iter_mut().zip(u.iter()) {
+            *o ^= x;
+        }
+    }
+    out
+}
+
+fn b64(b: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(b)
+}
+fn unb64(s: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| e.to_string())
+}
+
+/// Every secret of one delegate scope, decrypted: (raw key, value).
+fn scope_secrets(dir: &Path, cipher: &XChaCha20Poly1305) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut names: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    if let Some(pt) = std::fs::read(dir.join(".keys"))
+        .ok()
+        .and_then(|reg| open_blob(cipher, &reg))
+    {
+        let mut i = 0;
+        while i + 4 <= pt.len() {
+            let n = u32::from_le_bytes([pt[i], pt[i + 1], pt[i + 2], pt[i + 3]]) as usize;
+            i += 4;
+            if i + n > pt.len() {
+                break;
+            }
+            let key = pt[i..i + n].to_vec();
+            i += n;
+            names.insert(bs58::encode(blake3::hash(&key).as_bytes()).into_string(), key);
+        }
+    }
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let fname = e.file_name().to_string_lossy().into_owned();
+        if fname.starts_with('.') || e.path().is_dir() {
+            continue;
+        }
+        let Some(key) = names.get(&fname) else {
+            continue; // a value whose name the registry lost: it cannot be re-keyed by name
+        };
+        if let Some(pt) = std::fs::read(e.path()).ok().and_then(|b| open_blob(cipher, &b)) {
+            out.push((key.clone(), pt));
+        }
+    }
+    out
+}
+
+fn node_kek(data_dir: &Path) -> Result<[u8; 32], String> {
+    let p = data_dir.join("secrets").join("node_kek");
+    let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "node_kek is not 32 bytes".to_string())
+}
+
+fn export_bundle(data_dir: &Path, delegate: &str, password: &str) -> Result<(Vec<u8>, usize), String> {
+    if bs58::decode(delegate).into_vec().map(|v| v.len()) != Ok(32) {
+        return Err("not a delegate address".into());
+    }
+    let kek = node_kek(data_dir)?;
+    let dir = data_dir.join("secrets").join(delegate);
+    if !dir.is_dir() {
+        return Err(format!("no delegate {delegate} on this node"));
+    }
+    let cipher = dek(&kek, delegate);
+    let secrets = scope_secrets(&dir, &cipher);
+    if secrets.is_empty() {
+        return Err("that delegate has no readable secrets".into());
+    }
+    let body = json!({
+        "v": 1,
+        "delegate": delegate,
+        "from": data_dir.display().to_string(),
+        "secrets": secrets.iter().map(|(k, v)| json!({"k": b64(k), "v": b64(v)})).collect::<Vec<_>>(),
+    })
+    .to_string();
+    let mut salt = [0u8; 16];
+    getrandom_fill(&mut salt);
+    let key = pbkdf2_sha256(password.as_bytes(), &salt, BUNDLE_ROUNDS);
+    let c = XChaCha20Poly1305::new((&key).into());
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ct = c
+        .encrypt(&nonce, body.as_bytes())
+        .map_err(|_| "seal failed".to_string())?;
+    let mut out = Vec::with_capacity(4 + 16 + 24 + ct.len());
+    out.extend_from_slice(BUNDLE_MAGIC);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(nonce.as_slice());
+    out.extend_from_slice(&ct);
+    Ok((out, secrets.len()))
+}
+
+fn getrandom_fill(buf: &mut [u8]) {
+    use chacha20poly1305::aead::rand_core::RngCore;
+    OsRng.fill_bytes(buf);
+}
+
+fn open_bundle(bundle: &[u8], password: &str) -> Result<serde_json::Value, String> {
+    if bundle.len() < 4 + 16 + 24 + 16 || &bundle[..4] != BUNDLE_MAGIC {
+        return Err("not a keycraft bundle".into());
+    }
+    let key = pbkdf2_sha256(password.as_bytes(), &bundle[4..20], BUNDLE_ROUNDS);
+    let c = XChaCha20Poly1305::new((&key).into());
+    let pt = c
+        .decrypt(XNonce::from_slice(&bundle[20..44]), &bundle[44..])
+        .map_err(|_| "wrong password, or a damaged bundle".to_string())?;
+    serde_json::from_slice(&pt).map_err(|e| e.to_string())
+}
+
+/// Write the bundle's secrets into this node's store under the bundle's
+/// delegate address, encrypted with THIS node's key; the name registry is
+/// merged. Existing values with the same name are replaced. Returns (delegate, written).
+fn import_bundle(data_dir: &Path, bundle: &[u8], password: &str) -> Result<(String, usize), String> {
+    let v = open_bundle(bundle, password)?;
+    let delegate = v["delegate"].as_str().ok_or("bundle: no delegate")?.to_string();
+    if bs58::decode(&delegate).into_vec().map(|v| v.len()) != Ok(32) {
+        return Err("bundle: bad delegate address".into());
+    }
+    let kek = node_kek(data_dir)?;
+    let cipher = dek(&kek, &delegate);
+    let dir = data_dir.join("secrets").join(&delegate);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // what the registry already names
+    let mut names: Vec<Vec<u8>> = scope_secrets(&dir, &cipher).into_iter().map(|(k, _)| k).collect();
+    let mut written = 0;
+    for e in v["secrets"].as_array().cloned().unwrap_or_default() {
+        let k = unb64(e["k"].as_str().unwrap_or_default())?;
+        let val = unb64(e["v"].as_str().unwrap_or_default())?;
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let ct = cipher
+            .encrypt(&nonce, val.as_slice())
+            .map_err(|_| "encrypt failed".to_string())?;
+        let mut blob = Vec::with_capacity(25 + ct.len());
+        blob.push(0x01);
+        blob.extend_from_slice(nonce.as_slice());
+        blob.extend_from_slice(&ct);
+        let path = secret_file(&dir, &k);
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &blob).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        if !names.contains(&k) {
+            names.push(k);
+        }
+        written += 1;
+    }
+    // the registry, re-sealed with every name
+    let mut reg = Vec::new();
+    for k in &names {
+        reg.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        reg.extend_from_slice(k);
+    }
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ct = cipher
+        .encrypt(&nonce, reg.as_slice())
+        .map_err(|_| "encrypt failed".to_string())?;
+    let mut blob = vec![0x01];
+    blob.extend_from_slice(nonce.as_slice());
+    blob.extend_from_slice(&ct);
+    let path = dir.join(".keys");
+    let tmp = dir.join(".keys.tmp");
+    std::fs::write(&tmp, &blob).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok((delegate, written))
+}
+
 /// The data directory of a running node on this machine, from its command line.
 fn find_data_dir() -> Option<PathBuf> {
     let out = std::process::Command::new("ps")
@@ -283,6 +481,43 @@ fn native_messaging() {
                 }
             }
             Some("ping") => json!({"ok": {"host": env!("CARGO_PKG_VERSION")}}),
+            // a sealed bundle of one delegate's scope, written to a file (a reply is capped at 1 MB)
+            Some("export") => {
+                let dir = req["data_dir"].as_str().map(PathBuf::from).or_else(find_data_dir);
+                let delegate = req["delegate"].as_str().unwrap_or_default().to_string();
+                let password = req["password"].as_str().unwrap_or_default().to_string();
+                match dir {
+                    None => json!({"error": "no running node found; pass data_dir"}),
+                    Some(d) if password.len() < 4 => json!({"error": format!("a bundle password is at least 4 characters ({})", d.display())}),
+                    Some(d) => match export_bundle(&d, &delegate, &password) {
+                        Ok((bytes, n)) => {
+                            let out = req["out"].as_str().map(PathBuf::from).unwrap_or_else(|| {
+                                let home = std::env::var("HOME").unwrap_or_default();
+                                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                                PathBuf::from(format!("{home}/Downloads/keycraft-{}-{stamp}.bundle", &delegate[..8]))
+                            });
+                            match std::fs::write(&out, &bytes) {
+                                Ok(()) => json!({"ok": {"path": out.display().to_string(), "secrets": n, "bytes": bytes.len()}}),
+                                Err(e) => json!({"error": format!("{}: {e}", out.display())}),
+                            }
+                        }
+                        Err(e) => json!({"error": e}),
+                    },
+                }
+            }
+            // the bundle's bytes (base64, from the popup's file picker) into this node's store
+            Some("import") => {
+                let dir = req["data_dir"].as_str().map(PathBuf::from).or_else(find_data_dir);
+                let password = req["password"].as_str().unwrap_or_default().to_string();
+                match (dir, unb64(req["bundle"].as_str().unwrap_or_default())) {
+                    (None, _) => json!({"error": "no running node found; pass data_dir"}),
+                    (_, Err(e)) => json!({"error": format!("bundle: {e}")}),
+                    (Some(d), Ok(bytes)) => match import_bundle(&d, &bytes, &password) {
+                        Ok((delegate, n)) => json!({"ok": {"delegate": delegate, "written": n, "data_dir": d.display().to_string()}}),
+                        Err(e) => json!({"error": e}),
+                    },
+                }
+            }
             _ => json!({"error": "unknown op"}),
         };
         let bytes = reply.to_string().into_bytes();
@@ -347,6 +582,47 @@ fn main() {
                 }
             }
         }
+        Some("export") => {
+            let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+            let delegate = args.get(1).cloned().unwrap_or_default();
+            let dir = get("--data-dir").map(PathBuf::from).or_else(find_data_dir);
+            let (Some(password), Some(out), Some(dir)) = (get("--password"), get("--out"), dir) else {
+                eprintln!("export <delegate> --password P --out FILE [--data-dir DIR]");
+                std::process::exit(2)
+            };
+            match export_bundle(&dir, &delegate, &password) {
+                Ok((bytes, n)) => match std::fs::write(&out, &bytes) {
+                    Ok(()) => println!("{out}: {n} secrets, {} bytes", bytes.len()),
+                    Err(e) => {
+                        eprintln!("{out}: {e}");
+                        std::process::exit(1)
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1)
+                }
+            }
+        }
+        Some("import") => {
+            let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+            let file = args.get(1).cloned().unwrap_or_default();
+            let dir = get("--data-dir").map(PathBuf::from).or_else(find_data_dir);
+            let (Some(password), Some(dir)) = (get("--password"), dir) else {
+                eprintln!("import FILE --password P [--data-dir DIR]");
+                std::process::exit(2)
+            };
+            match std::fs::read(&file)
+                .map_err(|e| format!("{file}: {e}"))
+                .and_then(|b| import_bundle(&dir, &b, &password))
+            {
+                Ok((delegate, n)) => println!("{n} secrets into {} under {delegate}", dir.display()),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1)
+                }
+            }
+        }
         Some("install") => match args.get(1) {
             Some(id) => match install(id) {
                 Ok(p) => println!("installed: {}", p.display()),
@@ -366,7 +642,7 @@ fn main() {
             native_messaging()
         }
         Some(_) => {
-            eprintln!("keycraft-host list [--data-dir DIR] | install <extension id> | (stdin: native messaging)");
+            eprintln!("keycraft-host list [--data-dir DIR] [--values] | export <delegate> --password P --out FILE | import FILE --password P | install <extension id> | (stdin: native messaging)");
             std::process::exit(2)
         }
         None => native_messaging(),
