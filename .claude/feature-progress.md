@@ -19,4 +19,4 @@
 ## Phase 5: typed keys (§4) — not started
 
 ## Node facts
-- The Mac node (port 7510) runs from `~/.claude/jobs/2a0aa3ae/tmp/net1/data` (set by me on 2026-09-12): its secrets are backed up to `~/Library/Application Support/freenet/node-7510-backup-20260913-2111`; moving the node to a durable dir needs a restart the user has not asked for yet
+- The Mac node (port 7510) now runs from `~/Library/Application Support/freenet/node-7510/{data,config}` (moved 2026-09-13 at the user's request: stopped in 4 s, copied 450 MB, config paths rewritten, up in 3 s, a page served in 0.2 s; log at `node-7510/node.log`). The old copy under the job's tmp dir and the earlier secrets backup are leftovers. It is a plain background process, not launchd: it does not survive a reboot
