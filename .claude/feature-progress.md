@@ -25,3 +25,10 @@
 
 ## Node facts
 - The Mac node (port 7510) now runs from `~/Library/Application Support/freenet/node-7510/{data,config}` (moved 2026-09-13 at the user's request: stopped in 4 s, copied 450 MB, config paths rewritten, up in 3 s, a page served in 0.2 s; log at `node-7510/node.log`). The old copy under the job's tmp dir and the earlier secrets backup are leftovers. It is a plain background process, not launchd: it does not survive a reboot
+
+## Phase 6: one active identity (2026-09-13, user: "only 1 active key at a time so website not load all key")
+- [x] the extension keeps one active identity (`active`/`setActive`; `create` makes the new one active); `list` (what a page sees) returns ONLY the active identity, `listAll` (the popup) shows all with an `active` flag and a Use button; `storeKey`/`sign` refuse any owner that is not active
+- [x] proven at the mechanism level against the local node: seeded home + test2, set home active, `listAll` shows home active / test2 not, and a page's `accounts()` would receive only the active one
+- [x] each app reloads its account when the active identity changes, but only once idle (a reload that raced an in-flight create would double-init a drive)
+- PIN reset/change made worker-independent (the popup clears the store itself); manifest v0.2.0 shows in the popup title
+- **Open, NOT single-active's fault:** fresh-identity creation intermittently fails with "table _meta already exists" ~40-90 s into `Fs::init`. Instrumented `Homes::ensure`: it runs init EXACTLY ONCE (seq=0, one owner), so the double-schema is inside `Fs::init` on a retried/slow commit — a freenet-vfs/pages robustness issue under node load, present before this change (3 earlier runs passed by luck of faster writes). The local node (7510) is heavily loaded (Edge tabs subscribing + network peers → summarize_contract_state rate-limited, 24k+ dropped), which is what makes the write slow enough to retry. Existing identities (with drives) load fine; only first-run creation of a NEW drive is affected
