@@ -63,8 +63,9 @@ const ops = {
   async storeKey({ owner }) { return (await find(owner)).store_key; },
   async sign({ owner, message }) { const e = await find(owner); if (!e.signing_key) throw new Error('read-only identity'); const key = await seedToKey(e.signing_key, ['sign']); return hex(await crypto.subtle.sign('Ed25519', key, unhex(message))); },
   // per app, per identity: remembered once the person says yes in the page
-  async approved({ app, owner }) { const a = await approvals(); return !!(a[app] && a[app][owner]); },
-  async approve({ app, owner, name }) { const a = await approvals(); a[app] = a[app] || {}; a[app][owner] = { name, at: Date.now() }; await chrome.storage.local.set({ approvals: a }); return { ok: true }; },
+  // `app` is set by the dispatcher from the sender's URL, never taken from the message
+  async approved({ app, owner }) { if (!app) return false; const a = await approvals(); return !!(a[app] && a[app][owner]); },
+  async approve({ app, owner, name }) { if (!app) throw new Error('no app'); const a = await approvals(); a[app] = a[app] || {}; a[app][owner] = { name, at: Date.now() }; await chrome.storage.local.set({ approvals: a }); return { ok: true }; },
   async listApprovals() { return approvals(); },
   async revoke({ app }) { const a = await approvals(); delete a[app]; await chrome.storage.local.set({ approvals: a }); return { ok: true }; },
   async exportFile() { const box = await getBox(); if (!box) throw new Error('no store'); return box; },
@@ -86,6 +87,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   // a page reaches here through content.js (its url is the page's); the popup's url is our own
   const fromPage = !(sender.url || '').startsWith(chrome.runtime.getURL(''));
   if (fromPage && !FROM_PAGE.has(msg.op)) { reply({ error: 'not from a page' }); return; }
+  // the app an approval is for: the contract id in the sender's URL (or its host), from the browser, not the page
+  if (msg.op === 'approved' || msg.op === 'approve') { const u = sender.url || ''; msg = { ...msg, app: (u.match(/\/v1\/contract\/web\/([^/]+)/) || [])[1] || (u.match(/^[a-z]+:\/\/([^/]+)/) || [])[1] || '' }; }
   op(msg).then(v => reply({ ok: v }), e => reply({ error: String(e && e.message || e) }));
   return true;
 });

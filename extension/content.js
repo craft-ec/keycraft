@@ -9,14 +9,16 @@ const names = new Map(); // owner -> name, for the questions
 window.addEventListener('message', async e => {
   const m = e.data && e.data.craftworksKeys; if (!m || e.source !== window) return;
   const answer = r => window.postMessage({ craftworksKeysReply: { id: m.id, ...r } }, '*');
+  // only these come from a page; approvals are written here, never on the page's say-so
+  if (!['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign'].includes(m.op)) return answer({ error: 'not a page operation' });
   try {
     if (m.op === 'list') { const r = await send(m); if (r.ok) for (const x of r.ok) names.set(x.owner, x.name); return answer(r); }
     if (m.op === 'storeKey' || m.op === 'sign') {
-      const ok = await send({ op: 'approved', app, owner: m.owner });
+      const ok = await send({ op: 'approved', owner: m.owner });
       if (!(ok && ok.ok)) {
         const name = names.get(m.owner) || m.owner.slice(0, 12) + '…';
         if (!window.confirm(`Let this app (${app}) use your identity "${name}" from the keycraft extension? It will read as ${name} and sign what you do here as ${name}. You are asked once per app.`)) return answer({ error: 'declined' });
-        await send({ op: 'approve', app, owner: m.owner, name });
+        await send({ op: 'approve', owner: m.owner, name });
       }
       return answer(await send(m));
     }
