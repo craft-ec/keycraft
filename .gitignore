@@ -1,0 +1,5 @@
+target/
+.DS_Store
+web/www/datacraft_web*.js
+web/www/*.wasm
+web/www/*.d.ts
