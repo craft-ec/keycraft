@@ -9,7 +9,7 @@
   .id { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #262a33 } .id code { color:#9aa1ad; font-size:11px }
   .err { color:#ff6b6b }
 </style>
-<h1>keycraft</h1>
+<h1>keycraft <span id="ver" class="muted" style="font-weight:400"></span></h1>
 <div id="locked"><p class="muted" id="lk-msg">Enter your PIN.</p><input id="pw" type="password" inputmode="numeric" pattern="[0-9]*" placeholder="PIN (4 to 12 digits)" maxlength="12" autocomplete="off"><button id="unlock">Unlock</button><p class="err" id="lk-err"></p><p class="muted"><a id="forgot" href="#" style="color:#9aa1ad">Forgot PIN? Reset the store</a></p></div>
 <div id="open" hidden>
   <div id="list"></div>

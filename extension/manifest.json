@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "keycraft",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Carries your craftworks identities between devices: an encrypted key store in your browser profile, synced by Chrome. Nodes still do the signing.",
   "permissions": [
     "storage",
