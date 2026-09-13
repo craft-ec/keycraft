@@ -43,11 +43,13 @@ try {
   await fc.goto(`http://localhost:8796/index.html?port=${port}`);
   await fc.waitForFunction(() => /list \/files: ok/.test(document.getElementById('log').textContent) || /error/.test(document.getElementById('status').textContent) || document.getElementById('s-welcome').classList.contains('on'), null, { timeout: 120000 });
   if (await fc.evaluate(() => document.getElementById('s-welcome').classList.contains('on'))) {
-    say('filecraft: no identity yet; creating one through the extension');
-    await fc.fill('#w-name', 'harness-' + Date.now().toString(36)); await fc.click('#w-go');
-    await fc.waitForFunction(() => /list \/files: ok/.test(document.getElementById('log').textContent) || document.getElementById('w-err').textContent.length > 0, null, { timeout: 260000 });
-    say('welcome result:', JSON.stringify(await fc.textContent('#w-err')));
-    say('FULL LOG:\n' + await fc.textContent('#log'));
+    // creation lives in the plugin now: make the identity there (it becomes active), then let the page pick it up
+    const name = 'harness-' + Date.now().toString(36);
+    const c = await popup.evaluate(n => chrome.runtime.sendMessage({ op: 'create', name: n }), name);
+    say('popup create', name, JSON.stringify(c));
+    await fc.reload();
+    await fc.waitForFunction(() => /list \/files: (ok|.*)/.test(document.getElementById('log').textContent) && !/list \/files: started$/.test(document.getElementById('log').textContent) || /error/.test(document.getElementById('status').textContent) || /accounts: [^\n]*(error|exists|sql)/.test(document.getElementById('log').textContent), null, { timeout: 260000 }).catch(() => say('no list/files outcome within 260 s'));
+    say('LOG:', (await fc.textContent('#log')).replace(/(\d+ ms  )/g, '\n$1').slice(-1500));
   }
   say('filecraft:', await fc.textContent('#status'), '|', await fc.textContent('#acct-btn'), '|', await fc.textContent('#crumb'));
   fc.on('console', m => { if (m.type() === 'error') say('page console:', m.text().slice(0, 300)); });

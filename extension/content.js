@@ -10,7 +10,7 @@ window.addEventListener('message', async e => {
   const m = e.data && e.data.craftworksKeys; if (!m || e.source !== window) return;
   const answer = r => window.postMessage({ craftworksKeysReply: { id: m.id, ...r } }, '*');
   // only these come from a page; approvals are written here, never on the page's say-so
-  if (!['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign'].includes(m.op)) return answer({ error: 'not a page operation' });
+  if (!['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign', 'settled'].includes(m.op)) return answer({ error: 'not a page operation' });
   try {
     if (m.op === 'list') { const r = await send(m); if (r.ok) for (const x of r.ok) names.set(x.owner, x.name); return answer(r); }
     if (m.op === 'storeKey' || m.op === 'sign') {

@@ -50,7 +50,9 @@ const ops = {
   async active() { const a = (await chrome.storage.local.get('active')).active || null; const list = (await entries()).filter(e => !e.kind || e.kind === 'identity'); if (a && list.some(e => e.owner === a)) return a; return list[0] ? list[0].owner : null; },
   async setActive({ owner }) { const list = (await entries()).filter(e => !e.kind || e.kind === 'identity'); if (!list.some(e => e.owner === owner)) throw new Error('no such identity'); await chrome.storage.local.set({ active: owner }); return { ok: true }; },
   // what a page sees: the active identity alone, by name and owner
-  async list() { const a = await ops.active(); return (await entries()).filter(e => e.owner === a && (!e.kind || e.kind === 'identity')).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key })); },
+  async list() { const a = await ops.active(); return (await entries()).filter(e => e.owner === a && (!e.kind || e.kind === 'identity')).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, fresh: !!e.fresh })); },
+  // the identity's drive now exists on the network: no longer fresh
+  async settled({ owner }) { const list = await entries(); const e = list.find(e => e.owner === owner); if (e && e.fresh) { delete e.fresh; await save(list); } return { ok: true }; },
   async listAll() { const a = await ops.active(); return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, active: e.owner === a })); },
   // a new identity: an Ed25519 seed and a store key from the browser's randomness
   async create({ name }) {
@@ -60,7 +62,8 @@ const ops = {
     const seed = hex(pkcs8.slice(-32)), owner = hex(await crypto.subtle.exportKey('raw', kp.publicKey));
     const store_key = hex(crypto.getRandomValues(new Uint8Array(32)));
     const list = await entries(); if (list.some(e => e.name === name)) throw new Error('that name is taken');
-    list.push({ name, owner, store_key, signing_key: seed, created_at: Math.floor(Date.now() / 1000) }); await save(list);
+    // fresh: no database of this identity exists yet, so a page may create its drive without looking it up first
+    list.push({ name, owner, store_key, signing_key: seed, created_at: Math.floor(Date.now() / 1000), fresh: true }); await save(list);
     await chrome.storage.local.set({ active: owner });
     return { owner };
   },
@@ -96,7 +99,7 @@ ops.hostPing = async () => native({ op: 'ping' });
 // every craftworks identity on this machine's node, and a count of what else is there
 ops.scanNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); const mine = await entries(); const found = []; let others = 0; for (const d of r.delegates) { for (const i of d.identities) found.push({ ...i, delegate: d.address, here: mine.some(m => m.owner === i.owner) }); if (d.kind !== 'craftworks') others += Object.keys(d.secrets).length; } return { data_dir: r.data_dir, identities: found, other_secrets: others, delegates: r.delegates.length }; };
 ops.importFromNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); let n = 0; for (const d of r.delegates) for (const i of d.identities) { if (!i.store_key) continue; try { await ops.put({ entry: { name: i.name, owner: i.owner, store_key: i.store_key, signing_key: i.signing_key } }); n++; } catch (e) {} } return { imported: n }; };
-const FROM_PAGE = new Set(['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign', 'approved', 'approve']);
+const FROM_PAGE = new Set(['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign', 'approved', 'approve', 'settled']);
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const op = ops[msg && msg.op];
