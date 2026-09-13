@@ -7,7 +7,7 @@
 //! owner can read their own disk; this is that, as a program the keycraft
 //! extension can launch (Chrome native messaging) or a person can run.
 //!
-//!   keycraft-host list [--data-dir DIR]       every delegate, decoded where known
+//!   keycraft-host list [--data-dir DIR] [--values]   every delegate, decoded where known; --values dumps other delegates' secrets
 //!   keycraft-host install <extension id>      register as a native messaging host for Chrome
 //!   (no arguments, stdin)                     native messaging: one JSON request per message
 use std::collections::BTreeMap;
@@ -119,7 +119,7 @@ fn ed25519_public(seed: &[u8]) -> Vec<u8> {
 
 /// Every secret file of a delegate by its raw key name: the `.keys`
 /// registry (encrypted like the values) is a list of `[u32 LE len][key]`.
-fn raw_secrets(dir: &Path, cipher: &XChaCha20Poly1305) -> BTreeMap<String, String> {
+fn raw_secrets(dir: &Path, cipher: &XChaCha20Poly1305, values: bool) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     if let Some(pt) = std::fs::read(dir.join(".keys"))
@@ -156,13 +156,15 @@ fn raw_secrets(dir: &Path, cipher: &XChaCha20Poly1305) -> BTreeMap<String, Strin
         };
         if let Some(pt) = open_blob(cipher, &blob) {
             let label = names.get(&fname).cloned().unwrap_or(fname);
-            out.insert(label, hex(&pt));
+            out.insert(label, if values { hex(&pt) } else { format!("{} bytes", pt.len()) });
         }
     }
     out
 }
 
-fn list(data_dir: &Path) -> Result<serde_json::Value, String> {
+/// `values`: include other delegates' secret values (hex). A native-messaging
+/// reply is capped at 1 MB by Chrome, so the extension asks without.
+fn list(data_dir: &Path, values: bool) -> Result<serde_json::Value, String> {
     let secrets = data_dir.join("secrets");
     let kek_bytes = std::fs::read(secrets.join("node_kek"))
         .map_err(|e| format!("{}: {e}", secrets.join("node_kek").display()))?;
@@ -193,7 +195,7 @@ fn list(data_dir: &Path) -> Result<serde_json::Value, String> {
         let secrets = if kind == "craftworks" {
             BTreeMap::new()
         } else {
-            raw_secrets(&e.path(), &cipher)
+            raw_secrets(&e.path(), &cipher, values)
         };
         delegates.push(Delegate {
             address,
@@ -247,7 +249,7 @@ fn native_messaging() {
                     .map(PathBuf::from)
                     .or_else(find_data_dir);
                 match dir {
-                    Some(d) => match list(&d) {
+                    Some(d) => match list(&d, req["values"].as_bool().unwrap_or(false)) {
                         Ok(v) => json!({"ok": v}),
                         Err(e) => json!({"error": e}),
                     },
@@ -310,7 +312,8 @@ fn main() {
                 .and_then(|i| args.get(i + 1))
                 .map(PathBuf::from)
                 .or_else(find_data_dir);
-            match dir.ok_or_else(|| "no running node found; pass --data-dir".to_string()).and_then(|d| list(&d)) {
+            let values = args.iter().any(|a| a == "--values");
+            match dir.ok_or_else(|| "no running node found; pass --data-dir".to_string()).and_then(|d| list(&d, values)) {
                 Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
                 Err(e) => {
                     eprintln!("{e}");
