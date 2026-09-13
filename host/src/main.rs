@@ -331,6 +331,11 @@ fn main() {
                 std::process::exit(2)
             }
         },
+        // Chrome launches the host with its origin (`chrome-extension://…/`) and,
+        // on some platforms, `--parent-window=…`: native messaging
+        Some(a) if a.starts_with("chrome-extension://") || a.starts_with("--parent-window") => {
+            native_messaging()
+        }
         Some(_) => {
             eprintln!("keycraft-host list [--data-dir DIR] | install <extension id> | (stdin: native messaging)");
             std::process::exit(2)
