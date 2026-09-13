@@ -15,7 +15,10 @@
 - [x] popup: Scan this machine's node → import craftworks identities
 - [ ] verified from inside the extension: Chrome for Testing does not read the user-level NativeMessagingHosts manifests ("Specified native messaging host not found"), so the popup's scan is untested in a browser; needs real Chrome with the extension loaded unpacked (chrome://extensions → Load unpacked → keycraft/extension, then `keycraft-host install <id>`)
 
-## Phase 4: River (2026-09-13)
+## Phase 4: River — REMOVED (2026-09-13)
+- Built (helper decoded room keys; sealed bundle export/import re-keyed per node; popup buttons), then removed at the user's request: River keys each channel separately with no single identity, which does not fit the one-identity wallet. The helper still lists other delegates' secrets by name/size for inspection but no longer imports or moves any. Extension, popup and helper stripped of River/bundle code; `hmac`/`base64` deps dropped
+
+## Phase 4 (old): River (superseded)
 - [x] read: the helper decodes `signing_key:<origin>:<room>` into River rooms (5 on the Mac node); the extension keeps them as `river-room` records (owner = the room key's public half) and the popup lists them; pages never see them
 - [x] write-back as a bundle file (DESIGN §6): helper `export`/`import` (CLI and native messaging), popup buttons; round trip verified into a differently keyed scratch store (12 secrets, 894 KB, wrong password refused, 1.1 MB import request). NOT verified: River's UI on a second machine
 - [ ] (superseded) write-back routes considered — (a) River's own `StoreSigningKey` through the node's ws API (needs ciborium-encoded `ChatDelegateRequestMsg` + the freenet client framing, and River's delegate address per release); (b) the helper copying River's whole delegate scope between nodes (decrypt with node A's key, re-encrypt with node B's, update `.keys`; the room state `<origin>:room:<id>` must travel too, 50–420 KB each, or River shows no room). (b) needs no River code; the running node's in-memory index may not see files written behind it until restart

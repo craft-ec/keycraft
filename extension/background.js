@@ -51,7 +51,7 @@ const ops = {
   async setActive({ owner }) { const list = (await entries()).filter(e => !e.kind || e.kind === 'identity'); if (!list.some(e => e.owner === owner)) throw new Error('no such identity'); await chrome.storage.local.set({ active: owner }); return { ok: true }; },
   // what a page sees: the active identity alone, by name and owner
   async list() { const a = await ops.active(); return (await entries()).filter(e => e.owner === a && (!e.kind || e.kind === 'identity')).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key })); },
-  async listAll() { const a = await ops.active(); return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, kind: e.kind || 'identity', room: e.room, origin: e.origin, active: e.owner === a })); },
+  async listAll() { const a = await ops.active(); return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, active: e.owner === a })); },
   // a new identity: an Ed25519 seed and a store key from the browser's randomness
   async create({ name }) {
     name = (name || '').trim(); if (!name || name.length > 64) throw new Error('a name is 1 to 64 characters');
@@ -94,17 +94,8 @@ const HOST = 'com.craftworks.keycraft';
 const native = msg => new Promise((res, rej) => { let port; try { port = chrome.runtime.connectNative(HOST); } catch (e) { return rej(e); } let done = false; port.onMessage.addListener(r => { done = true; port.disconnect(); r.error ? rej(new Error(r.error)) : res(r.ok); }); port.onDisconnect.addListener(() => { if (!done) rej(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : 'helper closed')); }); port.postMessage(msg); });
 ops.hostPing = async () => native({ op: 'ping' });
 // every craftworks identity on this machine's node, and a count of what else is there
-ops.scanNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); const mine = await entries(); const found = [], rooms = []; let others = 0; for (const d of r.delegates) { for (const i of d.identities) found.push({ ...i, delegate: d.address, here: mine.some(m => m.owner === i.owner) }); for (const x of d.river_rooms || []) rooms.push({ room: x.room, origin: x.origin, delegate: d.address, here: mine.some(m => m.kind === 'river-room' && m.room === x.room) }); if (d.kind !== 'craftworks') others += Object.keys(d.secrets).length; } return { data_dir: r.data_dir, identities: found, river_rooms: rooms, other_secrets: others, delegates: r.delegates.length }; };
-ops.importFromNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); let n = 0, rooms = 0; for (const d of r.delegates) { for (const i of d.identities) { if (!i.store_key) continue; try { await ops.put({ entry: { name: i.name, owner: i.owner, store_key: i.store_key, signing_key: i.signing_key } }); n++; } catch (e) {} } for (const x of d.river_rooms || []) { try { await ops.putRoom({ room: x.room, origin: x.origin, signing_key: x.signing_key, delegate: d.address }); rooms++; } catch (e) {} } } return { imported: n, rooms }; };
-// a River room's signing key: kept to hand back to River's delegate on another device
-ops.putRoom = async ({ room, origin, signing_key, delegate }) => { if (unhex(signing_key).length !== 32) throw new Error('signing key: 32 bytes'); const owner = await publicOf(signing_key); const list = (await entries()).filter(e => !(e.kind === 'river-room' && e.room === room)); list.push({ kind: 'river-room', name: `River room ${room.slice(0, 8)}…`, owner, room, origin, delegate, signing_key, store_key: '', created_at: Math.floor(Date.now() / 1000) }); await save(list); return { ok: true }; };
-
-// River (or any delegate) moves between machines as a sealed bundle file: the helper writes it here,
-// and reads it back on the other machine from the bytes the popup's file picker hands over
-ops.exportDelegate = async ({ delegate, password, data_dir }) => native({ op: 'export', delegate, password, data_dir });
-ops.importBundle = async ({ bundle, password, data_dir }) => native({ op: 'import', bundle, password, data_dir });
-ops.riverDelegates = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); return r.delegates.filter(d => (d.river_rooms || []).length).map(d => ({ address: d.address, rooms: d.river_rooms.length, secrets: Object.keys(d.secrets).length })); };
-
+ops.scanNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); const mine = await entries(); const found = []; let others = 0; for (const d of r.delegates) { for (const i of d.identities) found.push({ ...i, delegate: d.address, here: mine.some(m => m.owner === i.owner) }); if (d.kind !== 'craftworks') others += Object.keys(d.secrets).length; } return { data_dir: r.data_dir, identities: found, other_secrets: others, delegates: r.delegates.length }; };
+ops.importFromNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); let n = 0; for (const d of r.delegates) for (const i of d.identities) { if (!i.store_key) continue; try { await ops.put({ entry: { name: i.name, owner: i.owner, store_key: i.store_key, signing_key: i.signing_key } }); n++; } catch (e) {} } return { imported: n }; };
 const FROM_PAGE = new Set(['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign', 'approved', 'approve']);
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
