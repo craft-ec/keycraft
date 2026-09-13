@@ -36,6 +36,7 @@
   <section id="s-ids" class="on">
     <div id="ids"><div class="empty">loading…</div></div>
     <div id="comms"></div>
+    <div id="ext" hidden><h2 style="margin-top:20px">In the keycraft extension</h2><div id="ext-list" class="muted"></div><p class="muted">The extension carries identities between devices in your Chrome profile, encrypted. <i>Save to extension</i> on an identity above puts it there; <i>Load into this node</i> imports it here.</p></div>
   </section>
 
   <section id="s-add">
@@ -78,27 +79,38 @@ for (const a of document.querySelectorAll('nav.tabs a')) a.onclick = () => show(
 const ask = (title, body) => new Promise(r => { $('dlg-title').textContent = title; $('dlg-body').replaceChildren(body); const d = $('dlg'); const done = v => { d.close(); r(v); }; $('dlg-ok').onclick = () => done(true); $('dlg-cancel').onclick = () => done(false); d.oncancel = () => done(false); d.showModal(); });
 
 let wallet = null, ids = { people: [], communities: [] };
+// the keycraft browser extension, when installed: an encrypted key store that follows the Chrome profile
+let ext = false; const extWaiting = new Map();
+window.addEventListener('message', e => { if (e.source !== window || !e.data) return; if (e.data.craftworksKeysReady) { ext = true; renderExt(); } const r = e.data.craftworksKeysReply; if (r && extWaiting.has(r.id)) { const { res, rej } = extWaiting.get(r.id); extWaiting.delete(r.id); r.error ? rej(new Error(r.error)) : res(r.ok); } });
+const extCall = (op, args = {}) => new Promise((res, rej) => { const id = Math.random().toString(36).slice(2); extWaiting.set(id, { res, rej }); window.postMessage({ craftworksKeys: { id, op, ...args } }, '*'); setTimeout(() => { if (extWaiting.has(id)) { extWaiting.delete(id); rej(new Error('no answer from the extension')); } }, 60000); });
+const renderExt = async () => { const box = $('ext'); if (!ext) { box.hidden = true; return; } box.hidden = false; try { const st = await extCall('status'); if (!st.unlocked) { $('ext-list').textContent = st.initialised ? 'locked: unlock it from the toolbar button' : 'not set up yet: pick a passphrase from the toolbar button'; return; } const list = await extCall('list'); const l = $('ext-list'); l.replaceChildren(); if (!list.length) l.textContent = 'empty'; for (const e of list) { const here = ids.people.some(p => p.owner === e.owner); const row = el('div', { className: 'id', style: 'margin:6px 0' }, el('div', {}, el('div', { className: 'name', textContent: e.name + (e.can_sign ? '' : ' (read-only)') }), el('code', { textContent: e.owner }))); const acts = el('div', { className: 'acts' }); if (here) acts.append(el('span', { className: 'muted', textContent: 'on this node' })); else { const b = el('button', { className: 'small', textContent: 'Load into this node' }); b.onclick = async () => { try { const k = await extCall('get', { owner: e.owner, name: e.name }); await call(`import ${k.name}`, () => wallet.import(k.name, k.signing_key || '', k.store_key)); await refresh(); renderExt(); } catch (err) { log('load: ' + err, 'err'); } }; acts.append(b); } row.append(acts); l.append(row); } } catch (err) { $('ext-list').textContent = String(err.message || err); } };
+
+const ago = t => { const s = Math.max(0, Date.now() / 1000 - t); if (s < 3600) return 'today'; if (s < 86400) return `${Math.floor(s / 3600)} h ago`; const d = Math.floor(s / 86400); return d === 1 ? 'yesterday' : `${d} d ago`; };
 const card = (k, community) => {
   const c = el('div', { className: 'card id' });
   c.append(el('div', {}, el('div', { className: 'name', textContent: k.name }), el('div', { className: 'kind', textContent: community ? 'community · its key set on this node' : (k.can_sign ? 'identity' : 'read-only · someone else\'s data you follow') }), el('code', { textContent: k.owner })));
   const acts = el('div', { className: 'acts' });
   const keysBtn = el('button', { className: 'ghost small', textContent: 'Show keys' }); keysBtn.onclick = () => showKeys(k.name); acts.append(keysBtn);
   const ren = el('button', { className: 'ghost small', textContent: 'Rename' }); ren.onclick = () => rename(k.name); acts.append(ren);
+  if (ext) { const sv = el('button', { className: 'ghost small', textContent: 'Save to extension' }); sv.onclick = async () => { try { const o = J(await call(`export ${k.name}`, () => wallet.export(k.name))); await extCall('put', { entry: { name: k.name, owner: o.owner || k.owner, store_key: o.store_key, signing_key: o.signing_key } }); log(`${k.name}: saved to the extension`, 'ok'); renderExt(); } catch (err) { log('save: ' + err, 'err'); } }; acts.append(sv); }
   const rm = el('button', { className: 'danger small', textContent: 'Remove' }); rm.onclick = () => remove(k); acts.append(rm);
   c.append(acts);
   const owns = el('div', { className: 'owns' });
-  if (k.error) owns.append(document.createTextNode('home drive: ' + k.error));
-  else { owns.append(document.createTextNode(k.home == null ? 'no home drive yet' : `home drive at seq ${k.home} · databases:`)); if (k.home != null && !k.dbs.length) owns.append(document.createTextNode(' none yet')); for (const db of k.dbs) owns.append(el('span', { textContent: db.name, title: db.address || '' })); }
+  if (k.error) owns.append(document.createTextNode('drive: ' + k.error));
+  else { owns.append(document.createTextNode(k.home == null ? 'no drive yet' : `drive at seq ${k.home} · databases:`)); if (k.home != null && !k.dbs.length) owns.append(document.createTextNode(' none yet')); for (const db of k.dbs) owns.append(el('span', { textContent: db.name, title: db.address || '' })); }
   c.append(owns);
+  const used = Object.entries(k.used || {}).sort((a, b) => b[1] - a[1]);
+  if (used.length) { const u = el('div', { className: 'owns' }); u.append(document.createTextNode('used by: ')); for (const [app, t] of used) u.append(el('span', { textContent: `${app} · ${ago(t)}` })); c.append(u); }
   return c;
 };
 const refresh = async () => {
   ids = J(await call('identities', () => wallet.identities()));
   const box = $('ids'); box.replaceChildren();
   if (!ids.people.length) box.append(el('div', { className: 'empty' }, el('div', { textContent: 'No identity on this node yet.' }), el('button', { textContent: 'Create one', style: 'margin-top:10px', onclick: () => show('add') })));
-  for (const k of ids.people) box.append(card(k, false));
+  for (const k of [...ids.people].sort((a, b) => a.name.localeCompare(b.name))) box.append(card(k, false));
   const cb = $('comms'); cb.replaceChildren();
   if (ids.communities.length) { cb.append(el('h2', { textContent: 'Communities you run', style: 'margin-top:20px' })); for (const k of ids.communities) cb.append(card(k, true)); }
+  renderExt();
 };
 const showKeys = async name => {
   const o = J(await call(`export ${name}`, () => wallet.export(name)));

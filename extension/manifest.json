@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "keycraft",
+  "version": "0.1.0",
+  "description": "Carries your craftworks identities between devices: an encrypted key store in your browser profile, synced by Chrome. Nodes still do the signing.",
+  "permissions": ["storage"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "keycraft" },
+  "content_scripts": [
+    { "matches": ["*://*/v1/contract/web/*", "http://localhost/*", "http://127.0.0.1/*"], "js": ["content.js"], "all_frames": true, "run_at": "document_start" }
+  ]
+}

@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>keycraft</title>
+<style>
+  body { width:320px; margin:0; padding:12px; background:#0f1115; color:#e8eaf0; font:13px/1.4 system-ui, sans-serif }
+  h1 { font-size:15px; margin:0 0 8px; color:#f2c94c } .muted { color:#9aa1ad; font-size:12px }
+  input { width:100%; box-sizing:border-box; background:#0b0d11; color:#e8eaf0; border:1px solid #262a33; border-radius:6px; padding:7px; margin:6px 0 }
+  button { background:#f2c94c; color:#1a1400; border:0; border-radius:6px; padding:6px 10px; font-weight:600; cursor:pointer; margin:2px 4px 2px 0 } button.ghost { background:transparent; color:#e8eaf0; border:1px solid #262a33 }
+  .id { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #262a33 } .id code { color:#9aa1ad; font-size:11px }
+  .err { color:#ff6b6b }
+</style>
+<h1>keycraft</h1>
+<div id="locked"><p class="muted" id="lk-msg">Unlock the key store.</p><input id="pw" type="password" placeholder="passphrase"><button id="unlock">Unlock</button><p class="err" id="lk-err"></p></div>
+<div id="open" hidden>
+  <div id="list"></div>
+  <p class="muted">Identities here sync with your Chrome profile, encrypted. Open keycraft on a node to save one here or load one into that node.</p>
+  <button id="export" class="ghost">Export keyfile</button><button id="import" class="ghost">Import keyfile</button><button id="lock" class="ghost">Lock</button>
+  <input id="file" type="file" accept="application/json" hidden>
+  <p class="err" id="err"></p>
+</div>
+<script type="module" src="popup.js"></script>

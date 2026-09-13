@@ -49,6 +49,7 @@ impl Wallet {
         for item in people.iter_mut().chain(communities.iter_mut()) {
             let name = item["name"].as_str().unwrap_or_default().to_string();
             item["home"] = json!(self.homes.seq(&name));
+            item["used"] = Accounts::usage(&self.homes, &name).await;
             item["dbs"] = match self.homes.databases(&name).await {
                 Ok(dbs) => json!(dbs),
                 Err(e) => {
@@ -62,7 +63,8 @@ impl Wallet {
 
     /// A new identity: key set, home drive, kind mark. Returns the owner key (hex).
     pub async fn create(&self, name: String) -> Result<String, JsValue> {
-        let owner = Accounts::create_person(self.client.clone(), &self.keys, &self.homes, &name).await?;
+        let owner =
+            Accounts::create_person(self.client.clone(), &self.keys, &self.homes, &name).await?;
         Ok(hex(&owner))
     }
 
@@ -138,7 +140,11 @@ impl Wallet {
         if new == old {
             return Ok(());
         }
-        let (signing_key, store_key) = match self.keys.call(Request::Export { name: old.clone() }).await? {
+        let (signing_key, store_key) = match self
+            .keys
+            .call(Request::Export { name: old.clone() })
+            .await?
+        {
             Reply::Exported {
                 signing_key,
                 store_key,
