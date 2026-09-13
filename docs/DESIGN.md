@@ -3,63 +3,75 @@
 Short sentences. The delegate and the stack under it are `../datacraft`
 and `../../freenet/*`, cited not repeated.
 
-## 1. Why one app
+## 1. Why an extension, not a page
 
-Every distributed network separates the wallet from the apps: keys live in
-one place, apps ask it to sign. Before keycraft each craftworks app had its
-own Keys screen (generate, import, export) and a key-set dropdown; a person
-saw keys everywhere and identity nowhere. Now:
+Every distributed network separates the wallet from the apps. A wallet that
+is itself a page served by a node has two flaws we hit: its keys live in
+that node's secret store (a folder per delegate, readable by nothing else,
+and on the Mac node inside a temporary directory), and it cannot see any
+other app's delegate. A browser extension has neither: the keys follow the
+person's browser profile, and with a native helper it can read everything a
+node on the machine holds.
 
 | Where | Shows | Can do |
 |---|---|---|
-| keycraft | every identity on this node, its owner key, its drive and databases | create, import, export, rename, remove |
-| any other app | the current identity's name in the header; a menu to switch when there are several | pick one; on first run, create one by name (onboarding, not key management) |
+| the extension (popup) | every identity, which apps were allowed | create, rename, remove, export/import a keyfile, scan this machine's node and import what it holds |
+| any craftworks app | the current identity's name in the header; a menu to switch | pick one; on first run, create one by name (the extension asks) |
+| a node's keys delegate | (fallback when there is no extension) | what it always did |
 
-## 2. Screens
+## 2. The extension
 
-- **Identities**: one card per identity: name, owner key, what it owns
-  (drive seq, the databases mounted in it), Show keys / Rename / Remove.
-  Communities a person runs (key sets whose drive is marked `community`)
-  are listed apart, never as someone to log in as.
-- **Add**: create (a name), or import from another device (the keys shown
-  by Show keys there). A store key alone imports read-only.
-- **About**: the node, the delegate address, the log.
+- **Store**: `[{name, owner, store_key, signing_key, created_at}]` as JSON,
+  AES-GCM under a key from the passphrase (PBKDF2-SHA256, 310k rounds),
+  in `chrome.storage.sync` (≤ 8 KiB: some dozens of identities). The
+  unlocked key sits in `chrome.storage.session` for the browser session.
+- **Signer**: Ed25519 through WebCrypto (Chrome ≥ 137). A page sends the
+  bytes to sign; the seed never leaves the service worker.
+- **Page protocol** (content script on `*/v1/contract/web/*` and localhost):
+  `window.postMessage({craftworksKeys: {id, op, …}})` →
+  `{craftworksKeysReply: {id, ok | error}}`. Ops a page may use: `ping`,
+  `list`, `create`, `put`, `get`, `storeKey`, `sign`. The first `storeKey`
+  or `sign` of an identity by an app asks the person once (app = the
+  contract id in the URL); `get`, `put` and `create` ask every time.
+- **Fallback**: `craftworks-page::keys::Keys::install` pings the bridge for
+  400 ms; with an answer every call goes to the extension, otherwise to the
+  node's delegate as before.
 
-## 3. What the delegate allows
+## 3. The native helper
 
-The keys delegate (`938BBXKobVtwM2Yxey4D2pGEXojEMbXZUrxZLTtjS1RT`) is
-frozen: a changed byte is a new delegate with an empty store. Its requests
-are Generate, Import, Export, List, StoreKey, Sign, Remove. So:
+`keycraft-host` (Rust, Chrome native messaging, also a CLI):
 
-- **Rename** is export, import under the new name, remove the old. Keys,
-  owner and everything on the network are unchanged; only the label on this
-  node changes.
-- **Remove** forgets the keys on this node. The data stays on the network;
-  without a copy of the signing key nothing signed by that identity can be
-  changed again. The page asks for the name to be typed.
-- The label "home" on an existing key set is only the old default of the
-  Generate box. Rename it. The identity's drive is a database named `home`
-  inside its own address, and that name stays internal: pages say "drive"
-  and "<name>'s files".
+- finds the running node's `--data-dir` from `ps`, or takes `--data-dir`;
+- reads `secrets/node_kek` (32 bytes), derives each delegate's key
+  (HKDF-SHA256, salt = the delegate's bs58 address, info
+  `freenet-delegate-dek-v1`), and opens every `secrets/<delegate>/<blake3(key)>`
+  file (`[0x01][24-byte XNonce][XChaCha20-Poly1305]`); the `.keys` registry
+  (`[u32 LE len][key]…`) gives each secret its name;
+- decodes the craftworks delegate (`ks-index/user`, `ks/user/<name>` =
+  `[can_sign][seed 32][store 32]`) into identities with their owners; other
+  delegates come back as named raw secrets (River: `signing_key:<origin>:<room>`
+  and `…:rooms_data`).
 
-## 4. Next: typed keys (a v2 delegate)
+The popup's *Scan this machine's node* lists what it found and imports the
+craftworks identities. Measured on the Mac node: 2 identities and 9 other
+delegates, River's rooms among them.
+
+## 4. Next: typed keys
 
 One identity today is ed25519 + a 32-byte store key. Wanted: several key
 kinds under one name, so an identity can also be a Solana account (ed25519,
 the same curve: the identity key *is* a Solana address), an Ethereum
 account (secp256k1), or a store-only key for shared data.
 
-Because v1 is frozen, keycraft ships a v2 delegate owned by this repo:
+In the extension a record gains a `kind`; no delegate change is needed:
 
 ```
 KeyRecord { name, kind: Ed25519 | Secp256k1 | Store, public: bytes, created_at, label }
 Request: Generate{name, kind}, Import{name, kind, secret}, Export, List, Sign{name, kind, msg}, Remove, Rename
 ```
 
-keycraft talks to both delegates: v1 for what exists, v2 for new kinds, and
-"Migrate" copies a v1 set into v2 (export, import) and removes it from v1.
-Apps keep signing through craftworks-page `Keys`, which learns to look in
-v2 first. Not before the accounts model has settled in every app.
+Apps keep signing through craftworks-page `Keys`; a Solana or Ethereum
+signer is one more `op`.
 
 ## 5. Next: usage history
 
@@ -73,16 +85,11 @@ identity: in its drive, not in the delegate (frozen, and per node).
   keycraft lists apps by last use. A device that imports the keys sees the
   same history.
 
-## 6. Next: the browser extension
+## 6. Next: River write-back
 
-Keys portable across devices without pasting hex:
-
-- A Chrome (MV3) extension holds a key store encrypted under a passphrase
-  in `chrome.storage.sync`, so the browser profile carries it between
-  devices; a passphrase-encrypted keyfile is the export.
-- A content script on craftworks pages exposes `window.craftworksKeys`
-  (list, import-into-node, export-from-node) by `postMessage`; keycraft
-  shows "Save to extension" and "Load from extension" beside each identity,
-  and any node's delegate can be filled from the extension in one click.
-- The node's delegate stays the signer; the extension is a carrier. Pages
-  never see a signing key from either.
+The helper reads River's per-room signing keys on device A. River's own
+delegate protocol has `StoreSigningKey {room_key, signing_key_bytes}`, so on
+device B the extension (through the node's WebSocket API, or a small CLI
+using `river-core`) can hand them to River's delegate there. Whether the
+node lets a client other than River's page address River's delegate is
+unverified: the first thing to measure.

@@ -1,16 +1,21 @@
 # keycraft progress
 
-## Phase 1: the wallet (2026-09-13) — done
-- [x] page crate `web/` (`Wallet`: identities, create, import, export, remove, rename = export+import+remove), page with Identities / Add / About; published as `Djf3MSYX28hhtxAY14QNSSYuiBEjeKxMEhZCCYayc4jL`
-- [x] keys UI removed from filecraft, papercraft, datacraft (their Rust key methods dropped too); every app's identity menu links to keycraft; filecraft/papercraft have an Account view
-- [x] verified live through the Hetzner tunnel: both identities listed with what they own in 5.1 s; rename `home` → `onlyabrak` in 1.5 s (so socialctl on Hetzner now needs `--key-set onlyabrak`)
+## Phase 1: the wallet as a page (2026-09-13) — built, then DELETED the same day
+- The page (`web/`, contract `Djf3MSYX…`) is gone: a wallet served by a node keeps its keys in that node's delegate folder and cannot see other apps' delegates (user: "keycraft on freenet is not the answer; handle the key via the chrome plugin"). The contract stays on the network unused.
 
-## Phase 2: wording and usage stamps (2026-09-13) — done
-- [x] "home" left every screen (crumb "test2 / files", "drive at seq N"); the drive is still named `home` inside its address
-- [x] `Accounts::touch` (craftworks-page): xattr `craftworks.used` = {app: unix} on the drive root, written on open at most once a day; every app stamps; keycraft shows "used by: app · when". Verified live: filecraft stamped test2 in 3.4 s, keycraft showed "used by: filecraft · today"
+## Phase 2: the extension as store and signer (2026-09-13)
+- [x] `extension/`: sealed synced store, Ed25519 via WebCrypto, per-app approval remembered, popup (create, rename, remove, keyfile export/import), page bridge
+- [x] `craftworks-page::keys`: extension backend behind the same `Keys` API (list, generate, import, export, store_key, signer); delegate fallback; every app rebuilt
+- [x] every app: no key management, menu says identities live in the extension
+- [ ] verified in a browser with the extension loaded (`extension/test/drive.mjs`): unlock → scan/import → filecraft read → a signed write. Google Chrome ignores unpacked extensions since 137; the harness uses Chrome for Testing 151 from the Playwright cache. First runs: extension loads; unlock timed out once (cause unknown), one run hung 14 min (pipe buffering hid output; now streamed and capped at 5 min)
 
-## Phase 3: typed keys, the v2 delegate (§4) — not started
+## Phase 3: the native helper (2026-09-13)
+- [x] `host/keycraft-host`: decrypts every delegate's secrets in a node's data dir (format in DESIGN §3); CLI `list`, native messaging `ping`/`list`, `install <id>`; verified on the Mac node (2 identities decoded with owners, 9 other delegates named, River's rooms among them); stdio protocol verified from Python
+- [x] popup: Scan this machine's node → import craftworks identities
+- [ ] verified from inside the extension (the harness step)
 
-## Phase 4: the browser extension (§6) — written, NOT exercised
-- [x] `extension/`: MV3, AES-GCM store under a PBKDF2 passphrase in `chrome.storage.sync`, unlocked key in `chrome.storage.session`; popup (unlock, list, remove, export/import keyfile); content script bridge `craftworksKeys` with a confirm() before any secret moves; keycraft page shows "In the keycraft extension" with Save to extension / Load into this node
-- [ ] load unpacked in Chrome and exercise: unlock, save an identity from keycraft, load it on a second profile/device. The headless test browser cannot load extensions, so nothing here is verified beyond `node --check`
+## Phase 4: River write-back (§6) — not started
+## Phase 5: typed keys (§4) — not started
+
+## Node facts
+- The Mac node (port 7510) runs from `~/.claude/jobs/2a0aa3ae/tmp/net1/data` (set by me on 2026-09-12): its secrets are backed up to `~/Library/Application Support/freenet/node-7510-backup-20260913-2111`; moving the node to a durable dir needs a restart the user has not asked for yet

@@ -1,0 +1,22 @@
+// Probes inside the extension's service worker: which primitive hangs?
+import { chromium } from 'playwright-core';
+import path from 'node:path'; import fs from 'node:fs';
+const profile = path.join(process.env.HOME, '.claude/jobs/2a0aa3ae/tmp/kc-profile-diag'); fs.rmSync(profile, { recursive: true, force: true });
+const ext = path.resolve(new URL('..', import.meta.url).pathname);
+setTimeout(() => { console.log('DIAG TIMEOUT'); process.exit(3); }, 120000).unref();
+const ctx = await chromium.launchPersistentContext(profile, { executablePath: process.env.PW_EXE, headless: true, args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`] });
+const warm = await ctx.newPage(); await warm.goto('http://localhost:8796/index.html?port=7511').catch(() => {});
+let sw = ctx.serviceWorkers()[0]; if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 30000 });
+const probe = (label, fn) => sw.evaluate(async ([label, src]) => { const f = new Function('return (' + src + ')')(); const t = Date.now(); try { const r = await Promise.race([f(), new Promise((_, rej) => setTimeout(() => rej(new Error('hang >8s')), 8000))]); return `${label}: ok ${JSON.stringify(r).slice(0, 80)} (${Date.now() - t} ms)`; } catch (e) { return `${label}: ${String(e && e.message || e)} (${Date.now() - t} ms)`; } }, [label, fn.toString()]).then(console.log, e => console.log(label, 'evaluate failed:', String(e).split('\n')[0]));
+await probe('storage.local.get', async () => chrome.storage.local.get('x'));
+await probe('storage.sync.get', async () => chrome.storage.sync.get('x'));
+await probe('storage.sync.set', async () => chrome.storage.sync.set({ x: 1 }));
+await probe('storage.session.get', async () => chrome.storage.session.get('x'));
+await probe('storage.session.set', async () => chrome.storage.session.set({ x: 1 }));
+await probe('pbkdf2', async () => { const base = await crypto.subtle.importKey('raw', new TextEncoder().encode('pw'), 'PBKDF2', false, ['deriveKey']); const k = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: new Uint8Array(16), iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, true, ['encrypt']); return (await crypto.subtle.exportKey('jwk', k)).alg; });
+await probe('ed25519 generate', async () => { const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']); return (await crypto.subtle.exportKey('raw', kp.publicKey)).byteLength; });
+await probe('ops loaded', async () => typeof chrome.runtime.onMessage.hasListeners === 'function' ? chrome.runtime.onMessage.hasListeners() : 'n/a');
+const pg = await ctx.newPage(); await pg.goto(`chrome-extension://${new URL(sw.url()).host}/popup.html`);
+console.log(await pg.evaluate(async () => { const t = Date.now(); try { const r = await Promise.race([chrome.runtime.sendMessage({ op: 'ping' }), new Promise((_, rej) => setTimeout(() => rej(new Error('hang >8s')), 8000))]); return 'popup→worker ping: ' + JSON.stringify(r) + ` (${Date.now() - t} ms)`; } catch (e) { return 'popup→worker ping: ' + String(e.message) + ` (${Date.now() - t} ms)`; } }));
+console.log(await pg.evaluate(async () => { const t = Date.now(); try { const r = await Promise.race([chrome.runtime.sendMessage({ op: 'unlock', passphrase: 'x' }), new Promise((_, rej) => setTimeout(() => rej(new Error('hang >15s')), 15000))]); return 'popup→worker unlock: ' + JSON.stringify(r) + ` (${Date.now() - t} ms)`; } catch (e) { return 'popup→worker unlock: ' + String(e.message) + ` (${Date.now() - t} ms)`; } }));
+await ctx.close().catch(() => {}); process.exit(0);

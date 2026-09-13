@@ -1,11 +1,29 @@
-// The bridge a craftworks page sees: window.postMessage in, postMessage out.
-// Page → { craftworksKeys: { id, op, ...args } }; back → { craftworksKeysReply: { id, ok | error } }.
-// A page only ever gets a secret back after the person confirms in this frame.
+// The bridge a craftworks page sees. Page → { craftworksKeys: { id, op, ...args } };
+// back → { craftworksKeysReply: { id, ok | error } }. The first time an app
+// uses an identity (a store key to read, a signature to write) the person is
+// asked here, once per app and identity; a secret leaves the extension only
+// through get, and only after a question every time.
+const app = (location.pathname.match(/\/v1\/contract\/web\/([^/]+)/) || [])[1] || location.host;
+const send = m => chrome.runtime.sendMessage(m);
+const names = new Map(); // owner -> name, for the questions
 window.addEventListener('message', async e => {
   const m = e.data && e.data.craftworksKeys; if (!m || e.source !== window) return;
   const answer = r => window.postMessage({ craftworksKeysReply: { id: m.id, ...r } }, '*');
-  if (m.op === 'get' && !window.confirm(`Give this page the keys of "${m.name || m.owner}" from the keycraft extension? It will import them into the node it is connected to.`)) return answer({ error: 'declined' });
-  if (m.op === 'put' && !window.confirm(`Save the keys of "${m.entry && m.entry.name}" into the keycraft extension? They will sync with your browser profile, encrypted.`)) return answer({ error: 'declined' });
-  try { answer(await chrome.runtime.sendMessage(m)); } catch (err) { answer({ error: String(err) }); }
+  try {
+    if (m.op === 'list') { const r = await send(m); if (r.ok) for (const x of r.ok) names.set(x.owner, x.name); return answer(r); }
+    if (m.op === 'storeKey' || m.op === 'sign') {
+      const ok = await send({ op: 'approved', app, owner: m.owner });
+      if (!(ok && ok.ok)) {
+        const name = names.get(m.owner) || m.owner.slice(0, 12) + '…';
+        if (!window.confirm(`Let this app (${app}) use your identity "${name}" from the keycraft extension? It will read as ${name} and sign what you do here as ${name}. You are asked once per app.`)) return answer({ error: 'declined' });
+        await send({ op: 'approve', app, owner: m.owner, name });
+      }
+      return answer(await send(m));
+    }
+    if (m.op === 'get' && !window.confirm(`Give this page (${app}) the secret keys of "${m.name || m.owner}" from the keycraft extension?`)) return answer({ error: 'declined' });
+    if (m.op === 'put' && !window.confirm(`Save the keys of "${m.entry && m.entry.name}" into the keycraft extension? They sync with your Chrome profile, encrypted.`)) return answer({ error: 'declined' });
+    if (m.op === 'create' && !window.confirm(`Create the identity "${m.name}" in the keycraft extension for this app (${app})?`)) return answer({ error: 'declined' });
+    answer(await send(m));
+  } catch (err) { answer({ error: String(err && err.message || err) }); }
 });
 window.postMessage({ craftworksKeysReady: true }, '*');

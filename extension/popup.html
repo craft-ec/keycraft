@@ -13,6 +13,9 @@
 <div id="locked"><p class="muted" id="lk-msg">Unlock the key store.</p><input id="pw" type="password" placeholder="passphrase"><button id="unlock">Unlock</button><p class="err" id="lk-err"></p></div>
 <div id="open" hidden>
   <div id="list"></div>
+  <div style="margin:8px 0"><input id="new-name" placeholder="new identity name" maxlength="64"><button id="create">Create identity</button></div>
+  <div id="apps" class="muted"></div>
+  <div style="margin:8px 0"><button id="scan" class="ghost">Scan this machine's node</button><span id="scan-out" class="muted"></span></div>
   <p class="muted">Identities here sync with your Chrome profile, encrypted. Open keycraft on a node to save one here or load one into that node.</p>
   <button id="export" class="ghost">Export keyfile</button><button id="import" class="ghost">Import keyfile</button><button id="lock" class="ghost">Lock</button>
   <input id="file" type="file" accept="application/json" hidden>
