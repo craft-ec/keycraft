@@ -61,7 +61,7 @@ const { default: init, Wallet } = await import(`./keycraft_web.js?v=${BUILD}`);
 await init(new URL(`./keycraft_web_bg.wasm?v=${BUILD}`, location.href));
 const $ = id => document.getElementById(id);
 const p = new URLSearchParams(location.search);
-const ws = p.get('ws') || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${p.get('port') ? location.hostname + ':' + p.get('port') : (location.port === '8798' ? location.hostname + ':7509' : location.host)}/v1/contract/command?encodingProtocol=native`;
+const ws = p.get('ws') || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${p.get('port') ? location.hostname + ':' + p.get('port') : (location.port === '8801' ? location.hostname + ':7509' : location.host)}/v1/contract/command?encodingProtocol=native`;
 const t0 = performance.now();
 const log = (s, cls) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = `${Math.round(performance.now() - t0)} ms  ${s}`; $('log').appendChild(d); };
 let chain = Promise.resolve(), busyCount = 0;
