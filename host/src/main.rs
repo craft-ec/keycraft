@@ -35,12 +35,22 @@ struct Identity {
     signing_key: String,
 }
 
+/// A River room's signing key: `signing_key:<origin bs58>:<room bs58>` → 32 bytes.
+#[derive(Serialize)]
+struct RiverRoom {
+    origin: String,
+    room: String,
+    signing_key: String,
+}
+
 #[derive(Serialize)]
 struct Delegate {
     address: String,
     kind: &'static str,
     /// craftworks: decoded identities
     identities: Vec<Identity>,
+    /// River's chat delegate: one per room with a signing key
+    river_rooms: Vec<RiverRoom>,
     /// any delegate: raw secrets by name when the name registry is readable, else by hash
     secrets: BTreeMap<String, String>,
 }
@@ -197,10 +207,26 @@ fn list(data_dir: &Path, values: bool) -> Result<serde_json::Value, String> {
         } else {
             raw_secrets(&e.path(), &cipher, values)
         };
+        // River rooms: the raw values are needed whatever `values` says
+        let river_rooms: Vec<RiverRoom> = raw_secrets(&e.path(), &cipher, true)
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let mut parts = k.strip_prefix("signing_key:")?.splitn(2, ':');
+                let origin = parts.next()?.to_string();
+                let room = parts.next()?.to_string();
+                (v.len() == 64).then_some(RiverRoom {
+                    origin,
+                    room,
+                    signing_key: v,
+                })
+            })
+            .collect();
+        let kind = if !river_rooms.is_empty() { "river" } else { kind };
         delegates.push(Delegate {
             address,
             kind,
             identities,
+            river_rooms,
             secrets,
         });
     }

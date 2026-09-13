@@ -25,16 +25,30 @@ const approvals = async () => (await chrome.storage.local.get('approvals')).appr
 const ops = {
   async ping() { const box = await getBox(); return { extension: true, initialised: !!box, unlocked: !!(await getSession()) }; },
   async status() { return ops.ping(); },
-  async unlock({ passphrase }) {
+  // the PIN seals the store: first use sets it, later uses unlock. Digits only,
+  // 4 to 12: a guard against a casual look, not against someone holding the blob
+  async unlock({ pin, passphrase }) {
+    pin = String(pin ?? passphrase ?? ''); if (!/^\d{4,12}$/.test(pin)) throw new Error('a PIN is 4 to 12 digits');
     let box = await getBox(); let key;
-    if (!box) { const salt = newSalt(); key = await deriveKey(passphrase, salt); box = await seal(key, salt, []); await chrome.storage.sync.set({ box }); }
-    else { key = await deriveKey(passphrase, unb64(box.salt)); await open(key, box); }
+    if (!box) { const salt = newSalt(); key = await deriveKey(pin, salt); box = await seal(key, salt, []); await chrome.storage.sync.set({ box }); }
+    else { key = await deriveKey(pin, unb64(box.salt)); await open(key, box); }
     await chrome.storage.session.set({ jwk: await crypto.subtle.exportKey('jwk', key) });
     return { ok: true };
   },
+  // a new PIN while unlocked: the same identities under a new seal
+  async changePin({ pin }) {
+    pin = String(pin ?? ''); if (!/^\d{4,12}$/.test(pin)) throw new Error('a PIN is 4 to 12 digits');
+    const list = await entries(); const salt = newSalt(); const key = await deriveKey(pin, salt);
+    await chrome.storage.sync.set({ box: await seal(key, salt, list) }); await chrome.storage.session.set({ jwk: await crypto.subtle.exportKey('jwk', key) });
+    return { ok: true };
+  },
+  // a forgotten PIN: nothing can open the store, so reset forgets it and every identity in it
+  async reset() { await chrome.storage.sync.remove('box'); await chrome.storage.session.remove('jwk'); await chrome.storage.local.remove('approvals'); return { ok: true }; },
   async lock() { await chrome.storage.session.remove('jwk'); return { ok: true }; },
   // names and owners only
-  async list() { return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key })); },
+  // names and owners only; pages see craftworks identities, the popup sees everything
+  async list() { return (await entries()).filter(e => !e.kind || e.kind === 'identity').map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key })); },
+  async listAll() { return (await entries()).map(e => ({ name: e.name, owner: e.owner, can_sign: !!e.signing_key, kind: e.kind || 'identity', room: e.room, origin: e.origin })); },
   // a new identity: an Ed25519 seed and a store key from the browser's randomness
   async create({ name }) {
     name = (name || '').trim(); if (!name || name.length > 64) throw new Error('a name is 1 to 64 characters');
@@ -69,15 +83,17 @@ const ops = {
   async listApprovals() { return approvals(); },
   async revoke({ app }) { const a = await approvals(); delete a[app]; await chrome.storage.local.set({ approvals: a }); return { ok: true }; },
   async exportFile() { const box = await getBox(); if (!box) throw new Error('no store'); return box; },
-  async importFile({ box, passphrase }) { const key = await deriveKey(passphrase, unb64(box.salt)); const incoming = await open(key, box); let mine = []; try { mine = await entries(); } catch (e) {} const merged = [...mine.filter(m => !incoming.some(i => i.owner === m.owner)), ...incoming]; if (!(await getBox())) { const salt = newSalt(); const k2 = await deriveKey(passphrase, salt); await chrome.storage.sync.set({ box: await seal(k2, salt, merged) }); await chrome.storage.session.set({ jwk: await crypto.subtle.exportKey('jwk', k2) }); } else await save(merged); return { ok: true, count: merged.length }; },
+  async importFile({ box, passphrase, pin }) { const key = await deriveKey(String(pin ?? passphrase ?? ''), unb64(box.salt)); const incoming = await open(key, box); let mine = []; try { mine = await entries(); } catch (e) {} const merged = [...mine.filter(m => !incoming.some(i => i.owner === m.owner)), ...incoming]; if (!(await getBox())) { const salt = newSalt(); const k2 = await deriveKey(String(pin ?? passphrase ?? ''), salt); await chrome.storage.sync.set({ box: await seal(k2, salt, merged) }); await chrome.storage.session.set({ jwk: await crypto.subtle.exportKey('jwk', k2) }); } else await save(merged); return { ok: true, count: merged.length }; },
 };
 // the native helper (keycraft-host) reads what a Freenet node on this machine holds
 const HOST = 'com.craftworks.keycraft';
 const native = msg => new Promise((res, rej) => { let port; try { port = chrome.runtime.connectNative(HOST); } catch (e) { return rej(e); } let done = false; port.onMessage.addListener(r => { done = true; port.disconnect(); r.error ? rej(new Error(r.error)) : res(r.ok); }); port.onDisconnect.addListener(() => { if (!done) rej(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : 'helper closed')); }); port.postMessage(msg); });
 ops.hostPing = async () => native({ op: 'ping' });
 // every craftworks identity on this machine's node, and a count of what else is there
-ops.scanNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); const mine = await entries(); const found = []; let others = 0; for (const d of r.delegates) { for (const i of d.identities) found.push({ ...i, delegate: d.address, here: mine.some(m => m.owner === i.owner) }); if (d.kind !== 'craftworks') others += Object.keys(d.secrets).length; } return { data_dir: r.data_dir, identities: found, other_secrets: others, delegates: r.delegates.length }; };
-ops.importFromNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); let n = 0; for (const d of r.delegates) for (const i of d.identities) { if (!i.store_key) continue; try { await ops.put({ entry: { name: i.name, owner: i.owner, store_key: i.store_key, signing_key: i.signing_key } }); n++; } catch (e) {} } return { imported: n }; };
+ops.scanNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); const mine = await entries(); const found = [], rooms = []; let others = 0; for (const d of r.delegates) { for (const i of d.identities) found.push({ ...i, delegate: d.address, here: mine.some(m => m.owner === i.owner) }); for (const x of d.river_rooms || []) rooms.push({ room: x.room, origin: x.origin, delegate: d.address, here: mine.some(m => m.kind === 'river-room' && m.room === x.room) }); if (d.kind !== 'craftworks') others += Object.keys(d.secrets).length; } return { data_dir: r.data_dir, identities: found, river_rooms: rooms, other_secrets: others, delegates: r.delegates.length }; };
+ops.importFromNode = async ({ data_dir } = {}) => { const r = await native({ op: 'list', data_dir }); let n = 0, rooms = 0; for (const d of r.delegates) { for (const i of d.identities) { if (!i.store_key) continue; try { await ops.put({ entry: { name: i.name, owner: i.owner, store_key: i.store_key, signing_key: i.signing_key } }); n++; } catch (e) {} } for (const x of d.river_rooms || []) { try { await ops.putRoom({ room: x.room, origin: x.origin, signing_key: x.signing_key, delegate: d.address }); rooms++; } catch (e) {} } } return { imported: n, rooms }; };
+// a River room's signing key: kept to hand back to River's delegate on another device
+ops.putRoom = async ({ room, origin, signing_key, delegate }) => { if (unhex(signing_key).length !== 32) throw new Error('signing key: 32 bytes'); const owner = await publicOf(signing_key); const list = (await entries()).filter(e => !(e.kind === 'river-room' && e.room === room)); list.push({ kind: 'river-room', name: `River room ${room.slice(0, 8)}…`, owner, room, origin, delegate, signing_key, store_key: '', created_at: Math.floor(Date.now() / 1000) }); await save(list); return { ok: true }; };
 
 const FROM_PAGE = new Set(['ping', 'list', 'create', 'put', 'get', 'storeKey', 'sign', 'approved', 'approve']);
 

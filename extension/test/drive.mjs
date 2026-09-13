@@ -25,7 +25,7 @@ try {
   popup.on('console', m => say('popup:', m.type(), m.text().slice(0, 200))); popup.on('pageerror', e => say('popup error:', String(e).slice(0, 200)));
   popup.on('dialog', d => { say('popup dialog:', d.message().slice(0, 100)); d.accept(); });
   await popup.goto(`chrome-extension://${id}/popup.html`, { timeout: 20000 }); say('popup loaded');
-  await popup.fill('#pw', 'test-passphrase', { timeout: 10000 }); say('passphrase typed'); await popup.click('#unlock', { timeout: 10000 }); say('unlock clicked');
+  await popup.fill('#pw', '246810', { timeout: 10000 }); say('PIN typed'); await popup.click('#unlock', { timeout: 10000 }); say('unlock clicked');
   try { await popup.waitForSelector('#open:not([hidden])', { timeout: 20000 }); say('unlocked'); }
   catch (e) { say('unlock did not complete; lk-err =', JSON.stringify(await popup.textContent('#lk-err')), 'status =', JSON.stringify(await popup.evaluate(() => chrome.runtime.sendMessage({ op: 'status' })))); throw e; }
   say('popup lists:', await popup.$$eval('#list .id b', n => n.map(x => x.textContent)));
