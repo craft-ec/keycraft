@@ -215,9 +215,12 @@ fn find_data_dir() -> Option<PathBuf> {
         if !line.contains("freenet") || !line.contains("--data-dir") {
             continue;
         }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if let Some(i) = parts.iter().position(|p| *p == "--data-dir") {
-            return parts.get(i + 1).map(PathBuf::from);
+        // the value runs to the next flag: paths may hold spaces ("Application Support")
+        if let Some(rest) = line.split("--data-dir ").nth(1) {
+            let value = rest.split(" --").next().unwrap_or(rest).trim();
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
         }
     }
     None
